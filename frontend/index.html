@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>ArmourPenetrationSandbox</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', system-ui, sans-serif; }
+    body { background: #0e1116; color: #e6edf3; overflow: hidden; }
+    #hud {
+      position: absolute; top: 16px; left: 16px; width: 290px;
+      background: rgba(16, 20, 26, 0.88); border: 1px solid #30363d;
+      border-radius: 8px; padding: 14px; backdrop-filter: blur(6px);
+      display: flex; flex-direction: column; gap: 10px; z-index: 10;
+    }
+    h2 { font-size: 15px; letter-spacing: 0.5px; color: #58a6ff; text-transform: uppercase; }
+    label { font-size: 12px; color: #8b949e; display: flex; justify-content: space-between; }
+    select, input[type="range"] { width: 100%; margin-top: 4px; accent-color: #58a6ff; }
+    select { background: #161b22; color: #e6edf3; border: 1px solid #30363d; padding: 6px; border-radius: 4px; }
+    .btn-row { display: flex; gap: 8px; margin-top: 4px; }
+    button {
+      flex: 1; padding: 7px; border: 1px solid #30363d; border-radius: 4px;
+      background: #21262d; color: #e6edf3; cursor: pointer; font-size: 12px; font-weight: 600;
+    }
+    button:hover { background: #30363d; }
+    #readout {
+      position: absolute; top: 16px; right: 16px; width: 270px;
+      background: rgba(16, 20, 26, 0.88); border: 1px solid #30363d;
+      border-radius: 8px; padding: 14px; font-size: 13px; line-height: 1.6;
+    }
+    .verdict { font-size: 16px; font-weight: 800; margin-bottom: 6px; }
+    .PENETRATION { color: #3fb950; }
+    .RICOCHET { color: #d29922; }
+    .NON_PENETRATION { color: #f85149; }
+    #hint {
+      position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%);
+      background: rgba(16, 20, 26, 0.8); padding: 8px 16px; border-radius: 20px;
+      font-size: 12px; color: #8b949e; border: 1px solid #30363d; pointer-events: none;
+    }
+  </style>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="hud">
+    <h2>Protection Analysis</h2>
+    <div>
+      <label>Shell Type</label>
+      <select id="shellSelect"></select>
+    </div>
+    <div>
+      <label>Armor Material</label>
+      <select id="materialSelect">
+        <option value="RHA">RHA (Rolled Homogeneous - 1.0x)</option>
+        <option value="CAST">Cast Steel (0.94x)</option>
+        <option value="COMPOSITE">Composite (1.35x)</option>
+      </select>
+    </div>
+    <div>
+      <label>Plate Thickness <span id="thickVal">120 mm</span></label>
+      <input type="range" id="thickSlider" min="40" max="300" step="10" value="120" />
+    </div>
+    <div>
+      <label>Plate Slope Angle <span id="slopeVal">45°</span></label>
+      <input type="range" id="slopeSlider" min="0" max="80" step="1" value="45" />
+    </div>
+    <div>
+      <label>Firing Distance <span id="distVal">500 m</span></label>
+      <input type="range" id="distSlider" min="100" max="2000" step="100" value="500" />
+    </div>
+    <div>
+      <label>Impact Slow-Mo Speed <span id="slowVal">0.06x</span></label>
+      <input type="range" id="slowSlider" min="0.02" max="0.5" step="0.02" value="0.06" />
+    </div>
+    <div class="btn-row">
+      <button id="resetBtn">Reset Scene</button>
+      <button id="xrayBtn">Toggle X-Ray</button>
+    </div>
+  </div>
+
+  <div id="readout">
+    <div class="verdict" id="verdictText">AIM & CLICK PLATE</div>
+    <div id="statsText">Hover over the armor plate to inspect effective thickness. Click to fire.</div>
+  </div>
+
+  <div id="hint">Left-Drag: Orbit Camera • Scroll: Zoom • Click on Armor Plate: Fire Round</div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    // --- 1. SCENE & CAMERA ---
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0e1116);
+
+    const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.05, 100);
+    camera.position.set(2.4, 1.7, 3.2);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    document.body.appendChild(renderer.domElement);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.target.set(0, 0.8, 0);
+
+    // Lighting & Ground Grid
+    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1.4);
+    dirLight.position.set(5, 8, 5);
+    scene.add(dirLight);
+    scene.add(new THREE.GridHelper(12, 24, 0x30363d, 0x1c2128));
+
+    // --- 2. ARMOR PLATE & INTERNAL MODULES ---
+    const plateGroup = new THREE.Group();
+    plateGroup.position.set(0, 0.9, 0);
+    scene.add(plateGroup);
+
+    let plateMesh;
+    const solidPlateMat = new THREE.MeshStandardMaterial({
+      color: 0x4b5c4d, metalness: 0.65, roughness: 0.4, transparent: true, opacity: 1.0
+    });
+    const xrayPlateMat = new THREE.MeshStandardMaterial({
+      color: 0x58a6ff, wireframe: false, transparent: true, opacity: 0.22, depthWrite: false
+    });
+    let wireframeHelper = null;
+    let isXray = false;
+
+    function buildPlate(thicknessMm, slopeDeg) {
+      if (plateMesh) plateGroup.remove(plateMesh);
+      if (wireframeHelper) plateGroup.remove(wireframeHelper);
+
+      const thicknessMeters = thicknessMm / 1000; // 1 unit = 1 meter
+      const geo = new THREE.BoxGeometry(2.0, 1.4, thicknessMeters);
+      plateMesh = new THREE.Mesh(geo, isXray ? xrayPlateMat : solidPlateMat);
+      plateMesh.rotation.x = -THREE.MathUtils.degToRad(slopeDeg);
+      plateGroup.add(plateMesh);
+
+      const edges = new THREE.EdgesGeometry(geo);
+      wireframeHelper = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: 0x79c0ff, opacity: 0.4, transparent: true }));
+      wireframeHelper.rotation.copy(plateMesh.rotation);
+      plateGroup.add(wireframeHelper);
+    }
+
+    // Internal modules behind the plate (Ammo Rack, Crew, Engine)
+    const modules = [];
+    function createModule(name, size, pos, baseColor) {
+      const mesh = new THREE.Mesh(
+        new THREE.BoxGeometry(...size),
+        new THREE.MeshStandardMaterial({ color: baseColor, transparent: true, opacity: 0.85 })
+      );
+      mesh.position.set(...pos);
+      mesh.userData = { name, baseColor, hits: 0 };
+      scene.add(mesh);
+      modules.push(mesh);
+    }
+
+    createModule("Crew (Driver)", [0.45, 0.7, 0.4], [-0.45, 0.75, -0.85], 0x3b82f6);
+    createModule("Ammo Rack",     [0.55, 0.55, 0.5], [0.45, 0.65, -0.95],  0x8b5cf6);
+    createModule("Engine Block",  [1.1, 0.65, 0.6],  [0.0, 0.65, -1.75],   0x64748b);
+
+    function resetModules() {
+      modules.forEach(m => {
+        m.userData.hits = 0;
+        m.material.color.setHex(m.userData.baseColor);
+      });
+    }
+
+    function damageModule(mod) {
+      mod.userData.hits++;
+      if (mod.userData.hits >= 5) mod.material.color.setHex(0x111111);      // Destroyed (Black)
+      else if (mod.userData.hits >= 3) mod.material.color.setHex(0xf85149); // Critical (Red)
+      else mod.material.color.setHex(0xe3b341);                             // Damaged (Yellow)
+    }
+
+    function setXray(enabled) {
+      isXray = enabled;
+      if (plateMesh) plateMesh.material = enabled ? xrayPlateMat : solidPlateMat;
+    }
+
+    // --- 3. UI BINDINGS ---
+    const shellSelect = document.getElementById('shellSelect');
+    const materialSelect = document.getElementById('materialSelect');
+    const thickSlider = document.getElementById('thickSlider');
+    const slopeSlider = document.getElementById('slopeSlider');
+    const distSlider = document.getElementById('distSlider');
+    const slowSlider = document.getElementById('slowSlider');
+    const verdictText = document.getElementById('verdictText');
+    const statsText = document.getElementById('statsText');
+
+    fetch('/api/shells').then(r => r.json()).then(shells => {
+      shells.forEach(s => {
+        const opt = document.createElement('option');
+        opt.value = s.id;
+        opt.textContent = s.name;
+        shellSelect.appendChild(opt);
+      });
+    });
+
+    function updatePlateFromUI() {
+      document.getElementById('thickVal').textContent = `${thickSlider.value} mm`;
+      document.getElementById('slopeVal').textContent = `${slopeSlider.value}°`;
+      document.getElementById('distVal').textContent = `${distSlider.value} m`;
+      document.getElementById('slowVal').textContent = `${parseFloat(slowSlider.value).toFixed(2)}x`;
+      buildPlate(Number(thickSlider.value), Number(slopeSlider.value));
+    }
+
+    [thickSlider, slopeSlider, distSlider, slowSlider].forEach(el => el.addEventListener('input', updatePlateFromUI));
+    updatePlateFromUI();
+
+    document.getElementById('xrayBtn').onclick = () => setXray(!isXray);
+
+    // --- 4. SIMULATION OBJECTS & SLOW-MO STATE ---
+    const effectsGroup = new THREE.Group();
+    scene.add(effectsGroup);
+
+    let activeSim = null; // Holds current shell animation & spall particles
+
+    function clearEffects() {
+      while (effectsGroup.children.length > 0) {
+        effectsGroup.remove(effectsGroup.children[0]);
+      }
+      activeSim = null;
+      resetModules();
+      setXray(false);
+    }
+    document.getElementById('resetBtn').onclick = clearEffects;
+
+    function createShellMesh(shellType) {
+      const group = new THREE.Group();
+      const length = shellType === "APFSDS" ? 0.45 : 0.28;
+      const radius = shellType === "APFSDS" ? 0.015 : 0.042;
+      const body = new THREE.Mesh(
+        new THREE.ConeGeometry(radius, length, 12),
+        new THREE.MeshStandardMaterial({ color: 0xffd166, emissive: 0xff6b00, emissiveIntensity: 0.7 })
+      );
+      // Point cone along +Z so lookAt() aligns the tip with travel direction
+      body.rotation.x = Math.PI / 2;
+      group.add(body);
+      return group;
+    }
+
+    function addTrailLine(start, end, colorHex) {
+      const geo = new THREE.BufferGeometry().setFromPoints([start, end]);
+      const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: colorHex }));
+      effectsGroup.add(line);
+      return line;
+    }
+
+    function spawnImpactFlash(point, colorHex) {
+      const flash = new THREE.Mesh(
+        new THREE.SphereGeometry(0.06, 12, 12),
+        new THREE.MeshBasicMaterial({ color: colorHex, transparent: true, opacity: 0.9 })
+      );
+      flash.position.copy(point);
+      effectsGroup.add(flash);
+      return flash;
+    }
+
+    // --- 5. RAYCASTING (HOVER & CLICK TO FIRE) ---
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+    let pointerDownPos = { x: 0, y: 0 };
+
+    function getPlateHit(clientX, clientY) {
+      mouse.x = (clientX / window.innerWidth) * 2 - 1;
+      mouse.y = -(clientY / window.innerHeight) * 2 + 1;
+      raycaster.setFromCamera(mouse, camera);
+      const hits = raycaster.intersectObject(plateMesh);
+      if (hits.length === 0) return null;
+
+      const hit = hits[0];
+      const rayDir = raycaster.ray.direction.clone().normalize();
+      const worldNormal = hit.face.normal.clone()
+        .applyMatrix3(new THREE.Matrix3().getNormalMatrix(plateMesh.matrixWorld))
+        .normalize();
+      if (worldNormal.dot(rayDir) > 0) worldNormal.negate();
+
+      const cosTheta = Math.max(0.01, Math.min(1, -rayDir.dot(worldNormal)));
+      const impactAngleDeg = THREE.MathUtils.radToDeg(Math.acos(cosTheta));
+
+      return { hitPoint: hit.point, rayDir, worldNormal, cosTheta, impactAngleDeg };
+    }
+
+    // Live hover preview (only when no active shot is playing)
+    window.addEventListener('pointermove', (e) => {
+      if (activeSim) return;
+      const hit = getPlateHit(e.clientX, e.clientY);
+      if (!hit) return;
+      const effThick = Number(thickSlider.value) / hit.cosTheta;
+      statsText.innerHTML =
+        `<b>Live Aim Angle:</b> ${hit.impactAngleDeg.toFixed(1)}°<br>` +
+        `<b>Line-of-Sight Armor:</b> ${effThick.toFixed(1)} mm<br>` +
+        `<i>Click to fire round</i>`;
+    });
+
+    window.addEventListener('pointerdown', (e) => {
+      pointerDownPos = { x: e.clientX, y: e.clientY };
+    });
+
+    window.addEventListener('pointerup', async (e) => {
+      // Ignore if user was dragging to orbit the camera
+      if (Math.hypot(e.clientX - pointerDownPos.x, e.clientY - pointerDownPos.y) > 5) return;
+      if (e.target !== renderer.domElement) return;
+
+      const hit = getPlateHit(e.clientX, e.clientY);
+      if (!hit) return;
+
+      clearEffects();
+
+      // Ask Python backend for ballistics verdict
+      const res = await fetch('/api/simulate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shell_id: shellSelect.value,
+          thickness_mm: Number(thickSlider.value),
+          impact_angle_deg: hit.impactAngleDeg,
+          distance_m: Number(distSlider.value),
+          material: materialSelect.value,
+        })
+      });
+      const data = await res.json();
+
+      // Update HUD
+      verdictText.textContent = data.verdict.replace('_', ' ');
+      verdictText.className = `verdict ${data.verdict}`;
+      statsText.innerHTML =
+        `<b>Shell:</b> ${data.shell_name}<br>` +
+        `<b>Impact Angle:</b> ${data.impact_angle_deg}°<br>` +
+        `<b>Effective Armor:</b> ${data.effective_thickness_mm} mm<br>` +
+        `<b>Shell Penetration:</b> ${data.penetration_mm} mm<br>` +
+        `<b>Spall Fragments:</b> ${data.spall_count}`;
+
+      // Setup 3D slow-motion animation
+      const startPos = hit.hitPoint.clone().addScaledVector(hit.rayDir, -3.5);
+      const shellMesh = createShellMesh(data.shell_type);
+      shellMesh.position.copy(startPos);
+      shellMesh.lookAt(hit.hitPoint);
+      effectsGroup.add(shellMesh);
+
+      const plateTravelMeters = (Number(thickSlider.value) / 1000) / Math.max(hit.cosTheta, 0.15);
+      const exitPoint = hit.hitPoint.clone().addScaledVector(hit.rayDir, plateTravelMeters);
+      const reflectDir = hit.rayDir.clone().reflect(hit.worldNormal).normalize();
+
+      addTrailLine(startPos, hit.hitPoint, 0x8b949e);
+
+      activeSim = {
+        phase: "APPROACH", // APPROACH -> IMPACT -> POST -> DONE
+        data,
+        shellMesh,
+        hitPoint: hit.hitPoint,
+        exitPoint,
+        rayDir: hit.rayDir,
+        reflectDir,
+        speed: 9.0, // Base visual speed (m/s) before slow-mo multiplier
+        spallParticles: [],
+        flash: null,
+        postTimer: 0,
+      };
+    });
+
+    // --- 6. ANIMATION LOOP (WITH SLOW-MO TIME DILATION) ---
+    const clock = new THREE.Clock();
+
+    function spawnSpallCone(origin, dir, count, coneDeg) {
+      const particles = [];
+      const maxRad = THREE.MathUtils.degToRad(coneDeg);
+      const spallGeo = new THREE.SphereGeometry(0.018, 6, 6);
+
+      for (let i = 0; i < count; i++) {
+        // Random direction inside cone
+        const spread = Math.random() * maxRad;
+        const spin = Math.random() * Math.PI * 2;
+        const perp = new THREE.Vector3(1, 0, 0);
+        if (Math.abs(dir.x) > 0.9) perp.set(0, 1, 0);
+        perp.crossVectors(dir, perp).normalize();
+        const perp2 = new THREE.Vector3().crossVectors(dir, perp).normalize();
+
+        const velDir = dir.clone()
+          .addScaledVector(perp, Math.sin(spread) * Math.cos(spin))
+          .addScaledVector(perp2, Math.sin(spread) * Math.sin(spin))
+          .normalize();
+
+        const mesh = new THREE.Mesh(
+          spallGeo,
+          new THREE.MeshBasicMaterial({ color: 0xffa657 })
+        );
+        mesh.position.copy(origin);
+        effectsGroup.add(mesh);
+
+        particles.push({
+          mesh,
+          vel: velDir.multiplyScalar(4.0 + Math.random() * 4.5),
+          alive: true,
+          trailStart: origin.clone()
+        });
+      }
+      return particles;
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const rawDt = Math.min(clock.getDelta(), 0.05);
+      controls.update();
+
+      if (activeSim) {
+        const slowMoFactor = parseFloat(slowSlider.value);
+
+        if (activeSim.phase === "APPROACH") {
+          // Fast approach until the round touches the armor
+          const step = activeSim.speed * rawDt;
+          const distToHit = activeSim.shellMesh.position.distanceTo(activeSim.hitPoint);
+
+          if (step >= distToHit) {
+            activeSim.shellMesh.position.copy(activeSim.hitPoint);
+            activeSim.phase = "IMPACT";
+
+            // Trigger War Thunder Hit-Cam: X-Ray + Impact Flash!
+            if (activeSim.data.verdict === "PENETRATION") {
+              setXray(true);
+              activeSim.flash = spawnImpactFlash(activeSim.hitPoint, 0x3fb950);
+            } else if (activeSim.data.verdict === "RICOCHET") {
+              activeSim.flash = spawnImpactFlash(activeSim.hitPoint, 0xd29922);
+              activeSim.shellMesh.lookAt(activeSim.hitPoint.clone().add(activeSim.reflectDir));
+              addTrailLine(
+                activeSim.hitPoint,
+                activeSim.hitPoint.clone().addScaledVector(activeSim.reflectDir, 3.0),
+                0xd29922
+              );
+            } else {
+              activeSim.flash = spawnImpactFlash(activeSim.hitPoint, 0xf85149);
+            }
+          } else {
+            activeSim.shellMesh.position.addScaledVector(activeSim.rayDir, step);
+          }
+        }
+        else if (activeSim.phase === "IMPACT") {
+          // SLOW MOTION ENGAGED!
+          const slowDt = rawDt * slowMoFactor;
+          if (activeSim.flash) activeSim.flash.scale.multiplyScalar(1 + slowDt * 3);
+
+          if (activeSim.data.verdict === "PENETRATION") {
+            // Watch the shell slowly bore through the armor plate thickness
+            const step = (activeSim.speed * 0.45) * slowDt;
+            const distToExit = activeSim.shellMesh.position.distanceTo(activeSim.exitPoint);
+
+            if (step >= distToExit) {
+              activeSim.shellMesh.position.copy(activeSim.exitPoint);
+              activeSim.phase = "POST";
+              // Burst the spall cone out the back of the plate!
+              activeSim.spallParticles = spawnSpallCone(
+                activeSim.exitPoint,
+                activeSim.rayDir,
+                activeSim.data.spall_count,
+                activeSim.data.spall_cone_deg
+              );
+              addTrailLine(
+                activeSim.exitPoint,
+                activeSim.exitPoint.clone().addScaledVector(activeSim.rayDir, 2.8),
+                0x3fb950
+              );
+            } else {
+              activeSim.shellMesh.position.addScaledVector(activeSim.rayDir, step);
+            }
+          } else if (activeSim.data.verdict === "RICOCHET") {
+            activeSim.shellMesh.position.addScaledVector(activeSim.reflectDir, activeSim.speed * 0.8 * slowDt);
+            activeSim.postTimer += slowDt;
+            if (activeSim.postTimer > 0.4) activeSim.phase = "DONE";
+          } else {
+            // Non-penetration: shell stops/shatters on surface
+            activeSim.shellMesh.scale.multiplyScalar(0.97);
+            activeSim.postTimer += slowDt;
+            if (activeSim.postTimer > 0.25) activeSim.phase = "DONE";
+          }
+        }
+        else if (activeSim.phase === "POST") {
+          // Continue moving shell + spall cone in slow motion & check internal module hits
+          const slowDt = rawDt * slowMoFactor;
+          activeSim.postTimer += slowDt;
+          activeSim.shellMesh.position.addScaledVector(activeSim.rayDir, activeSim.speed * 0.65 * slowDt);
+
+          for (const p of activeSim.spallParticles) {
+            if (!p.alive) continue;
+            p.mesh.position.addScaledVector(p.vel, slowDt);
+
+            // Check if spall hits any internal module box
+            for (const mod of modules) {
+              const box = new THREE.Box3().setFromObject(mod);
+              if (box.containsPoint(p.mesh.position)) {
+                damageModule(mod);
+                p.alive = false;
+                p.mesh.material.color.setHex(0xf85149);
+                addTrailLine(p.trailStart, p.mesh.position.clone(), 0xff6b00);
+                break;
+              }
+            }
+          }
+
+          if (activeSim.postTimer > 0.55) {
+            activeSim.phase = "DONE";
+          }
+        }
+      }
+
+      renderer.render(scene, camera);
+    }
+
+    animate();
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+  </script>
+</body>
+</html>
